@@ -18,6 +18,7 @@ import asyncio
 import json
 import re
 import sys
+from pathlib import Path
 
 from camoufox.async_api import AsyncCamoufox
 
@@ -73,9 +74,9 @@ async def scrape(hack_url, do_download, want_index):
                     async with page.expect_download(timeout=300000) as dl_info:
                         await page.evaluate("u => { location.href = u }", data["url"])
                     dl = await dl_info.value
-                    path = f"C:/Users/Christian/Downloads/{fname}"
+                    path = Path("downloads") / fname
                     await dl.save_as(path)
-                    entry["saved"] = path
+                    entry["saved"] = str(path)
                 results.append(entry)
         return results
 
