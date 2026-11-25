@@ -7,6 +7,10 @@ Download Wii games from Vimm's Lair and romspure.cc, then convert to WBFS format
 ```
 wii-downloader/
 ├── wii_import_cli.py      # RVZ/ISO/WIA → WBFS → FAT32 USB import CLI
+├── twbm_idmap.py          # Offline Wii/NGC title map (port of TinyWiiBackupManager idmap)
+├── wiitdb.txt             # GameTDB title data (original language) — used by twbm_idmap
+├── wiitdb-en.txt          # GameTDB title data (English) — used by twbm_idmap
+├── format_wii_usb.py      # Format a USB drive to FAT32 with 32KB clusters
 ├── vimm_camoufox_scraper.py   # Vimm's Lair vault scraper (download links)
 ├── romspure_scraper.py        # romspure.cc download URL scraper
 ├── build_wii_csv.py           # Build wii_games.csv from Top 100 checklist
@@ -57,6 +61,9 @@ Reads `wii_checklist.txt` (Top 100 Wii games) and outputs `wii_games.csv` with c
 ### 3. Import to USB drive
 
 ```bash
+# Format the USB drive first (FAT32, 32KB clusters)
+python format_wii_usb.py D: 32768 WII
+
 # Single file
 python wii_import_cli.py import game.rvz E: --game-num 1
 

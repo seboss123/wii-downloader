@@ -23,8 +23,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -124,36 +122,52 @@ def read_meta(src_path: str) -> DiscMeta | None:
         except Exception:
             return None
     else:
-        return read_wii_header(src_path)
+        meta = read_wii_header(src_path)
+        if meta:
+            return meta
+        # Fall back to nodtool info for non-ISO formats (RVZ/WIA/CISO/GCZ)
+        return read_meta_nodtool(src_path)
 
 
-# ---------------------------------------------------------------------------
-# GameTDB title lookup (port of twbm_idmap::get_title / get_ascii_title)
-# ---------------------------------------------------------------------------
-
-_GAMETDB_CACHE: dict[str, str] = {}
-
-
-def gametdb_title(game_id: str) -> str | None:
-    """Fetch official title from GameTDB: https://www.gametdb.com/Wii/{GAMEID}"""
-    if game_id in _GAMETDB_CACHE:
-        return _GAMETDB_CACHE[game_id]
+def read_meta_nodtool(src_path: str) -> DiscMeta | None:
+    """Read disc metadata using nodtool info (for RVZ/WIA/CISO/GCZ formats)."""
+    if not CMD_NODTOOL:
+        return None
     try:
-        url = f"https://www.gametdb.com/Wii/{game_id}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode('utf-8', errors='ignore')
-        m = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
-        if m:
-            title = m.group(1).strip()
-            title = re.sub(r'\s*-\s*GameTDB\s*$', '', title, flags=re.IGNORECASE)
-            if title:
-                _GAMETDB_CACHE[game_id] = title
-                return title
+        out = subprocess.run(
+            [CMD_NODTOOL, 'info', src_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        text = out.stdout + out.stderr
+        game_id = None
+        title = None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('Game ID:'):
+                # Format: "Game ID: SMNE01" or "Game ID: SMNE01 (00010000534D4E45)"
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    game_id = parts[1].strip().split()[0] if parts[1].strip() else None
+            elif line.startswith('Title:'):
+                title = line.split(':', 1)[1].strip()
+        if game_id:
+            return DiscMeta(game_id, title or '', '', game_id[0] in ('R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'), 'rvz', 0)
     except Exception:
         pass
-    _GAMETDB_CACHE[game_id] = None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Game title map (exact port of TinyWiiBackupManager crates/idmap — offline)
+# ---------------------------------------------------------------------------
+
+def gametdb_title(game_id: str) -> str | None:
+    """TinyWii's twbm_idmap::get_ascii_title — bundled GameTDB wiitdb data."""
+    try:
+        import twbm_idmap
+        return twbm_idmap.get_ascii_title(game_id)
+    except Exception:
+        return None
 
 
 def sanitize_title(ascii_title: str) -> str:
@@ -169,6 +183,10 @@ def sanitize_title(ascii_title: str) -> str:
 def make_game_dir_name(game_id: str, fallback_title: str) -> str:
     """TinyWii's make_game_dir_name: title from ID map, else fallback."""
     game_title = gametdb_title(game_id) or fallback_title
+    # GameTDB page titles sometimes come as "SMNE01 - New Super Mario Bros. Wii"
+    prefix = f"{game_id} - "
+    if game_title.startswith(prefix):
+        game_title = game_title[len(prefix):]
     title = sanitize_title(game_title)
     return f"{title} [{game_id}]"
 
@@ -213,6 +231,7 @@ def convert_to_wbfs(src: str, out_dir: Path, split: bool) -> list[Path]:
     if CMD_WIT or CMD_NODTOOL:
         meta = read_meta(src)
         game_id = meta.game_id if meta else "UNKNOWN"
+        out_file = out_dir / f"{game_id}.wbfs"
 
         # Step 1: non-ISO formats → ISO
         #   nodtool handles RVZ/WIA/CISO/GCZ → ISO (wit can't read those)
@@ -232,10 +251,10 @@ def convert_to_wbfs(src: str, out_dir: Path, split: bool) -> list[Path]:
                     # wit can try RVZ directly (may fail on some)
                     src_for_wbfs = src
 
-            # Step 2: ISO → WBFS
+            # Step 2: ISO → WBFS (explicit output filename)
             if CMD_WIT:
                 subprocess.run(
-                    [CMD_WIT, "COPY", src_for_wbfs, "-v", "-B", "--wbfs", str(out_dir)],
+                    [CMD_WIT, "COPY", src_for_wbfs, str(out_file), "-v", "-B", "--wbfs"],
                     check=True, timeout=900,
                 )
             else:
@@ -244,6 +263,10 @@ def convert_to_wbfs(src: str, out_dir: Path, split: bool) -> list[Path]:
             if tmp_iso.exists():
                 tmp_iso.unlink()
 
+        if out_file.exists():
+            return _split_if_needed(out_file, out_dir, split)
+
+        # Fallback: locate whatever wit produced
         produced = sorted(out_dir.glob("*.wbfs"))
         if not produced:
             produced = sorted(out_dir.glob("*.wbf*"))
